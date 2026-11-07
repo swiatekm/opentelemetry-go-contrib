@@ -38,6 +38,7 @@ type configOptions struct {
 	opentelemetryConfig   OpenTelemetryConfiguration
 	loggerProviderOptions []sdklog.LoggerProviderOption
 	meterProviderOptions  []sdkmetric.Option
+	metricProducers       []sdkmetric.Producer
 	tracerProviderOptions []sdktrace.TracerProviderOption
 }
 
@@ -177,6 +178,22 @@ func WithLoggerProviderOptions(opts ...sdklog.LoggerProviderOption) Configuratio
 func WithMeterProviderOptions(opts ...sdkmetric.Option) ConfigurationOption {
 	return configurationOptionFunc(func(c configOptions) configOptions {
 		c.meterProviderOptions = append(c.meterProviderOptions, opts...)
+		return c
+	})
+}
+
+// WithMetricProducers registers producers as external Producers of metric data
+// on every metric reader built from the OpenTelemetryConfiguration.
+//
+// sdkmetric.WithProducer is a ReaderOption, so it can only be supplied to a
+// reader's constructor. Readers described by configuration are constructed
+// inside NewSDK, which leaves callers no way to attach a Producer to them. This
+// option closes that gap: it applies to readers built from config, in addition
+// to any readers passed through WithMeterProviderOptions, which callers build
+// themselves and can already give producers directly.
+func WithMetricProducers(producers ...sdkmetric.Producer) ConfigurationOption {
+	return configurationOptionFunc(func(c configOptions) configOptions {
+		c.metricProducers = append(c.metricProducers, producers...)
 		return c
 	})
 }
