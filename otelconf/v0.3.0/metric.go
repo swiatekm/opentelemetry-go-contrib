@@ -426,6 +426,18 @@ func (rws readerWithServer) Shutdown(ctx context.Context) error {
 	)
 }
 
+// NewSDKView converts a configured View into an sdkmetric.View.
+//
+// NewSDK applies the configured views to the MeterProvider it builds, so
+// callers normally never need this. It exists for callers that build
+// additional MeterProviders of their own alongside that one: those providers
+// have their own pipelines, and views are a provider-level option, so without
+// the same views they would report metrics the configured telemetry level is
+// meant to drop or rewrite.
+func NewSDKView(v View) (sdkmetric.View, error) {
+	return view(v)
+}
+
 func view(v View) (sdkmetric.View, error) {
 	if v.Selector == nil {
 		return nil, errors.New("view: no selector provided")
