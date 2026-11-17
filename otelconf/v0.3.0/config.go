@@ -34,12 +34,12 @@ const (
 )
 
 type configOptions struct {
-	ctx                   context.Context
-	opentelemetryConfig   OpenTelemetryConfiguration
-	loggerProviderOptions []sdklog.LoggerProviderOption
-	meterProviderOptions  []sdkmetric.Option
-	metricProducers       []sdkmetric.Producer
-	tracerProviderOptions []sdktrace.TracerProviderOption
+	ctx                     context.Context
+	opentelemetryConfig     OpenTelemetryConfiguration
+	loggerProviderOptions   []sdklog.LoggerProviderOption
+	meterProviderOptions    []sdkmetric.Option
+	metricProducerFactories []MetricProducerFactory
+	tracerProviderOptions   []sdktrace.TracerProviderOption
 }
 
 type shutdownFunc func(context.Context) error
@@ -182,18 +182,26 @@ func WithMeterProviderOptions(opts ...sdkmetric.Option) ConfigurationOption {
 	})
 }
 
-// WithMetricProducers registers producers as external Producers of metric data
-// on every metric reader built from the OpenTelemetryConfiguration.
+// MetricProducerFactory returns an sdkmetric.Producer for one metric reader
+// built from configuration. It is called with the temporality and aggregation
+// selectors of the reader being built, so the returned producer can aggregate
+// its data to match what that reader expects. The selectors are never nil.
+type MetricProducerFactory func(sdkmetric.TemporalitySelector, sdkmetric.AggregationSelector) sdkmetric.Producer
+
+// WithMetricProducerFactories registers factories that are invoked once per
+// metric reader built from the OpenTelemetryConfiguration; each returned
+// Producer is attached to the reader it was created for.
 //
 // sdkmetric.WithProducer is a ReaderOption, so it can only be supplied to a
-// reader's constructor. Readers described by configuration are constructed
-// inside NewSDK, which leaves callers no way to attach a Producer to them. This
-// option closes that gap: it applies to readers built from config, in addition
-// to any readers passed through WithMeterProviderOptions, which callers build
-// themselves and can already give producers directly.
-func WithMetricProducers(producers ...sdkmetric.Producer) ConfigurationOption {
+// reader's constructor, and a Producer's output must match the temporality and
+// aggregation of the reader it feeds. Readers described by configuration are
+// constructed inside NewSDK, which leaves callers no way to attach a Producer
+// to them, nor to learn their selectors. This option closes that gap. Readers
+// passed through WithMeterProviderOptions are built by callers, who can attach
+// producers to them directly.
+func WithMetricProducerFactories(factories ...MetricProducerFactory) ConfigurationOption {
 	return configurationOptionFunc(func(c configOptions) configOptions {
-		c.metricProducers = append(c.metricProducers, producers...)
+		c.metricProducerFactories = append(c.metricProducerFactories, factories...)
 		return c
 	})
 }

@@ -48,7 +48,7 @@ func meterProvider(cfg configOptions, res *resource.Resource) (metric.MeterProvi
 
 	var errs []error
 	for _, reader := range cfg.opentelemetryConfig.MeterProvider.Readers {
-		r, err := metricReader(cfg.ctx, reader, cfg.metricProducers...)
+		r, err := metricReader(cfg.ctx, reader, cfg.metricProducerFactories...)
 		if err == nil {
 			opts = append(opts, sdkmetric.WithReader(r))
 		} else {
@@ -72,7 +72,7 @@ func meterProvider(cfg configOptions, res *resource.Resource) (metric.MeterProvi
 	return mp, mp.Shutdown, nil
 }
 
-func metricReader(ctx context.Context, r MetricReader, producers ...sdkmetric.Producer) (sdkmetric.Reader, error) {
+func metricReader(ctx context.Context, r MetricReader, factories ...MetricProducerFactory) (sdkmetric.Reader, error) {
 	if r.Periodic != nil && r.Pull != nil {
 		return nil, errors.New("must not specify multiple metric reader type")
 	}
@@ -86,26 +86,34 @@ func metricReader(ctx context.Context, r MetricReader, producers ...sdkmetric.Pr
 		if r.Periodic.Timeout != nil {
 			opts = append(opts, sdkmetric.WithTimeout(time.Duration(*r.Periodic.Timeout)*time.Millisecond))
 		}
-		for _, p := range producers {
-			opts = append(opts, sdkmetric.WithProducer(p))
-		}
-		return periodicExporter(ctx, r.Periodic.Exporter, opts...)
+		return periodicExporter(ctx, r.Periodic.Exporter, factories, opts...)
 	}
 
 	if r.Pull != nil {
-		return pullReader(ctx, r.Pull.Exporter, producers...)
+		return pullReader(ctx, r.Pull.Exporter, factories...)
 	}
 	return nil, errors.New("no valid metric reader")
 }
 
-func pullReader(ctx context.Context, exporter PullMetricExporter, producers ...sdkmetric.Producer) (sdkmetric.Reader, error) {
+func pullReader(ctx context.Context, exporter PullMetricExporter, factories ...MetricProducerFactory) (sdkmetric.Reader, error) {
 	if exporter.Prometheus != nil {
-		return prometheusReader(ctx, exporter.Prometheus, producers...)
+		return prometheusReader(ctx, exporter.Prometheus, factories...)
 	}
 	return nil, errors.New("no valid metric exporter")
 }
 
-func periodicExporter(ctx context.Context, exporter PushMetricExporter, opts ...sdkmetric.PeriodicReaderOption) (sdkmetric.Reader, error) {
+// periodicReaderProducers mints one Producer per factory, bound to the
+// selectors of the exporter the periodic reader will serve: a PeriodicReader
+// takes its temporality and aggregation from its exporter.
+func periodicReaderProducers(exp sdkmetric.Exporter, factories []MetricProducerFactory) []sdkmetric.PeriodicReaderOption {
+	opts := make([]sdkmetric.PeriodicReaderOption, 0, len(factories))
+	for _, f := range factories {
+		opts = append(opts, sdkmetric.WithProducer(f(exp.Temporality, exp.Aggregation)))
+	}
+	return opts
+}
+
+func periodicExporter(ctx context.Context, exporter PushMetricExporter, factories []MetricProducerFactory, opts ...sdkmetric.PeriodicReaderOption) (sdkmetric.Reader, error) {
 	if exporter.Console != nil && exporter.OTLP != nil {
 		return nil, errors.New("must not specify multiple exporters")
 	}
@@ -119,6 +127,7 @@ func periodicExporter(ctx context.Context, exporter PushMetricExporter, opts ...
 		if err != nil {
 			return nil, err
 		}
+		opts = append(opts, periodicReaderProducers(exp, factories)...)
 		return sdkmetric.NewPeriodicReader(exp, opts...), nil
 	}
 	if exporter.OTLP != nil && exporter.OTLP.Protocol != nil {
@@ -135,6 +144,7 @@ func periodicExporter(ctx context.Context, exporter PushMetricExporter, opts ...
 		if err != nil {
 			return nil, err
 		}
+		opts = append(opts, periodicReaderProducers(exp, factories)...)
 		return sdkmetric.NewPeriodicReader(exp, opts...), nil
 	}
 	return nil, errors.New("no valid metric exporter")
@@ -324,7 +334,7 @@ func newIncludeExcludeFilter(lists *IncludeExclude) (attribute.Filter, error) {
 	}, nil
 }
 
-func prometheusReader(ctx context.Context, prometheusConfig *Prometheus, producers ...sdkmetric.Producer) (sdkmetric.Reader, error) {
+func prometheusReader(ctx context.Context, prometheusConfig *Prometheus, factories ...MetricProducerFactory) (sdkmetric.Reader, error) {
 	if prometheusConfig.Host == nil {
 		return nil, errors.New("host must be specified")
 	}
@@ -337,8 +347,13 @@ func prometheusReader(ctx context.Context, prometheusConfig *Prometheus, produce
 		return nil, err
 	}
 
-	for _, p := range producers {
-		opts = append(opts, otelprom.WithProducer(p))
+	// The prometheus exporter is always cumulative and uses the SDK's default
+	// aggregation; mint producers to match.
+	cumulative := func(sdkmetric.InstrumentKind) metricdata.Temporality {
+		return metricdata.CumulativeTemporality
+	}
+	for _, f := range factories {
+		opts = append(opts, otelprom.WithProducer(f(cumulative, sdkmetric.DefaultAggregationSelector)))
 	}
 
 	reg := prometheus.NewRegistry()
